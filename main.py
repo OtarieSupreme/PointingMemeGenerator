@@ -2,7 +2,7 @@ import sys, os
 from PySide6.QtCore import Qt, QPoint, QPointF, Signal, QSize 
 from PySide6.QtGui import QPainter, QBrush, QColor, QPen, QPixmap, QPolygon
 import PySide6.QtGui as QtGui 
-from PySide6.QtWidgets import QApplication, QWidget, QMainWindow , QSizePolicy
+from PySide6.QtWidgets import QApplication, QWidget, QMainWindow , QToolBar
 import cv2
 import numpy as np
 
@@ -26,6 +26,7 @@ class EditorWidget(QWidget):
         ]
 
         self.template = QPixmap()
+        self.template_og = None
         self.inside = QPixmap()
         self.inside_og = None
         self.ratio = 1.0  # width / height
@@ -35,9 +36,15 @@ class EditorWidget(QWidget):
         self.radius = 10
         self.drag_index = None
 
+        self.layer_switch = False
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
+
+        # Draw inside shape
+        if not self.inside.isNull() and self.layer_switch:
+            painter.drawPixmap(0, 0, self.inside)
 
         # Draw template
         if not self.template.isNull():
@@ -47,7 +54,7 @@ class EditorWidget(QWidget):
             painter.drawPixmap(x, y, scaled_pixmap)
         
         # Draw inside shape
-        if not self.inside.isNull():
+        if not self.inside.isNull() and not self.layer_switch:
             painter.drawPixmap(0, 0, self.inside)
 
         # Draw lines
@@ -72,34 +79,8 @@ class EditorWidget(QWidget):
 
     def update_inside_shape(self):
         if self.inside_og is not None:
-            
-
-            src_pts = np.array([
-                [0, 0],
-                [self.inside_og.shape[1] - 1, 0],
-                [self.inside_og.shape[1] - 1, self.inside_og.shape[0] - 1],
-                [0, self.inside_og.shape[0] - 1],
-            ], dtype=np.float32)
-
-            dst_pts = np.array([
-                [point.x() * self.width(), point.y() * self.height()] for point in self.points_rel
-            ], dtype=np.float32)
-
-            transform = cv2.getPerspectiveTransform(
-                src_pts, dst_pts
-            )
-
-            warped = cv2.warpPerspective(self.inside_og, transform, (self.width(), self.height()))
-            if warped.shape[2] == 4:
-                warped = cv2.cvtColor(warped, cv2.COLOR_BGRA2RGBA)
-            else:
-                warped = cv2.cvtColor(warped, cv2.COLOR_BGR2RGB)
-
-
-            h, w = warped.shape[:2]
-            bytes_per_line = warped.strides[0]
-            qimage = QtGui.QImage(warped.data, w, h, bytes_per_line, QtGui.QImage.Format_RGBA8888).rgbSwapped()
-            self.inside = QPixmap.fromImage(qimage)
+            warped = self.warp_inside()
+            self.inside = warped
             self.update()
 
     def points(self):
@@ -198,10 +179,88 @@ class EditorWidget(QWidget):
         else:
             event.ignore()
     
+    def flip_layer(self):
+        self.layer_switch = not self.layer_switch
+        self.update()
+    
+    def warp_inside(self, original_size=False):
+        src_pts = np.array([
+            [0, 0],
+            [self.inside_og.shape[1] - 1, 0],
+            [self.inside_og.shape[1] - 1, self.inside_og.shape[0] - 1],
+            [0, self.inside_og.shape[0] - 1],
+        ], dtype=np.float32)
 
-class ToolbarWidget(QWidget):
+        dst_pts = np.array([
+            [point.x() * self.width(), point.y() * self.height()] for point in self.points_rel
+        ], dtype=np.float32)
+
+        if original_size:
+            scale_x = self.template.width() / self.width()
+            scale_y = self.template.height() / self.height()
+            dst_pts[:, 0] *= scale_x
+            dst_pts[:, 1] *= scale_y
+
+        transform = cv2.getPerspectiveTransform(
+            src_pts, dst_pts
+        )
+
+        warped = cv2.warpPerspective(self.inside_og, transform, (self.width(), self.height()))
+        
+        if warped.shape[2] == 4:
+            warped = cv2.cvtColor(warped, cv2.COLOR_BGRA2RGBA)
+        else:
+            warped = cv2.cvtColor(warped, cv2.COLOR_BGR2RGB)
+
+        h, w = warped.shape[:2]
+        bytes_per_line = warped.strides[0]
+        qimage = QtGui.QImage(warped.data, w, h, bytes_per_line, QtGui.QImage.Format_RGBA8888).rgbSwapped()
+        warped = QPixmap.fromImage(qimage)
+
+        return warped
+
+
+    def render_pixmap(self):
+        final_image = QPixmap(self.template.size())
+        final_image.fill(Qt.transparent)
+        painter = QPainter(final_image)
+        painter.setRenderHint(QPainter.Antialiasing)
+        template = self.template
+
+        wrapped_inside = self.warp_inside(original_size=True)
+
+        if self.layer_switch:
+            painter.drawPixmap(0, 0, wrapped_inside)
+            
+        painter.drawPixmap(0, 0, template)
+
+        if not self.layer_switch:
+            painter.drawPixmap(0, 0, wrapped_inside)
+        painter.end()
+
+        return final_image
+
+    def export_image(self):
+        final_image = self.render_pixmap()
+        save_path = os.path.join(os.getcwd(), "exported_image.png")
+        final_image.save(save_path, "PNG")
+        
+        
+    def export_image_to_clipboard(self):
+        final_image = self.render_pixmap()
+        clipboard = QApplication.clipboard()
+        clipboard.setPixmap(final_image)
+    
+
+class ToolbarWidget(QToolBar):
     def __init__(self):
         super().__init__()
+        self.flip_layer_action = self.addAction("Flip Layer")
+        self.flip_layer_action.setToolTip("Flip between template and inside layer")
+
+        self.export_action = self.addAction("Export")
+        self.export_to_clipboard_action = self.addAction("Export to Clipboard")
+        
 
         
 
@@ -212,20 +271,12 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(600, 600)
 
         self.editor = EditorWidget()
-        # self.editor.fileDropped.connect(self.pictureDropped)
         self.setCentralWidget(self.editor)
-
-    # def pictureDropped(self, l):
-    #     for url in l:
-    #         if os.path.exists(url):
-    #             print(url)                
-    #             self.editor.change_image(url)
-                # icon = QtGui.QIcon(url)
-                # pixmap = icon.pixmap(72, 72)                
-                # icon = QtGui.QIcon(pixmap)
-                # item = QtGui.QListWidgetItem(url, self.view)
-                # item.setIcon(icon)        
-                # item.setStatusTip(url)  
+        self.toolbar = ToolbarWidget()
+        self.addToolBar(self.toolbar)
+        self.toolbar.flip_layer_action.triggered.connect(self.editor.flip_layer)
+        self.toolbar.export_action.triggered.connect(self.editor.export_image)
+        self.toolbar.export_to_clipboard_action.triggered.connect(self.editor.export_image_to_clipboard)
 
 
 if __name__ == "__main__":
