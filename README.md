@@ -33,6 +33,8 @@ python main.py # python3 on Linux
 
 ## **What's next ?** <sub><sup><sub><sup>(If i don't forget abour it)</sup></sub></sup></sub>
 - [x] ~~Export to file or clipboard~~
+- [ ] Support png as foreground (I forgot)
+- [ ] Support drag&drop of urls
 - [ ] Save the current setup
 - [ ] Easily scroll through the images of a folder
 
