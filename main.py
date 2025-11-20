@@ -69,12 +69,6 @@ class EditorWidget(QWidget):
         for p in self.points():
             painter.drawEllipse(p, self.radius, self.radius)
 
-        # Highlight widget border when dragging
-        if self.drag_index is not None:
-            highlight_pen = QPen(QColor(0, 120, 215), 4)
-            painter.setPen(highlight_pen)
-            painter.setBrush(Qt.NoBrush)
-            painter.drawRect(self.rect().adjusted(2, 2, -2, -2))
 
     def update_inside_shape(self):
         if self.inside_og is not None:
@@ -293,7 +287,7 @@ class ToolbarWidget(QToolBar):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Editable Polygon - PySide6")
+        self.setWindowTitle("Pointing Meme Generator")
         self.setMinimumSize(600, 600)
 
         self.editor = EditorWidget()
