@@ -1,21 +1,19 @@
 import sys, os
-from PySide6.QtCore import Qt, QPoint, QPointF, Signal, QSize 
+from PySide6.QtCore import Qt, QPoint, QPointF
 from PySide6.QtGui import QPainter, QBrush, QColor, QPen, QPixmap, QPolygon
-import PySide6.QtGui as QtGui 
-from PySide6.QtWidgets import QApplication, QWidget, QMainWindow , QToolBar
+import PySide6.QtGui as QtGui
+from PySide6.QtWidgets import QApplication, QWidget, QMainWindow, QToolBar, QFileDialog
 import cv2
 import numpy as np
 
-            
-class EditorWidget(QWidget):
 
-    # fileDropped = Signal(list)
+class EditorWidget(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setMinimumSize(400, 400) 
+        self.setMinimumSize(400, 400)
         # Keep the aspect ratio when resizing
-        
+
         self.setAcceptDrops(True)
 
         self.points_rel = [
@@ -48,11 +46,13 @@ class EditorWidget(QWidget):
 
         # Draw template
         if not self.template.isNull():
-            scaled_pixmap = self.template.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            scaled_pixmap = self.template.scaled(
+                self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
             x = (self.width() - scaled_pixmap.width()) // 2
             y = (self.height() - scaled_pixmap.height()) // 2
             painter.drawPixmap(x, y, scaled_pixmap)
-        
+
         # Draw inside shape
         if not self.inside.isNull() and not self.layer_switch:
             painter.drawPixmap(0, 0, self.inside)
@@ -76,7 +76,6 @@ class EditorWidget(QWidget):
             painter.setBrush(Qt.NoBrush)
             painter.drawRect(self.rect().adjusted(2, 2, -2, -2))
 
-
     def update_inside_shape(self):
         if self.inside_og is not None:
             warped = self.warp_inside()
@@ -84,7 +83,10 @@ class EditorWidget(QWidget):
             self.update()
 
     def points(self):
-        points = [QPoint(point.x() * self.width(), point.y() * self.height()) for point in self.points_rel]
+        points = [
+            QPoint(point.x() * self.width(), point.y() * self.height())
+            for point in self.points_rel
+        ]
         return points
 
     def mousePressEvent(self, event):
@@ -94,20 +96,17 @@ class EditorWidget(QWidget):
             if (pos - p).manhattanLength() <= self.radius:
                 self.drag_index = i
                 break
-    
-    
+
     def mouseMoveEvent(self, event):
         if self.drag_index is not None:
             # self.points[self.drag_index] = event.position().toPoint()
             mouse_pos = event.position().toPoint()
             self.points_rel[self.drag_index] = QPointF(
-                mouse_pos.x() / self.width(),
-                mouse_pos.y() / self.height()
+                mouse_pos.x() / self.width(), mouse_pos.y() / self.height()
             )
 
             self.update_inside_shape()
             self.update()
-
 
     def mouseReleaseEvent(self, event):
         self.drag_index = None
@@ -124,11 +123,11 @@ class EditorWidget(QWidget):
             return
 
         # Ensure RGBA
-        if img.shape[2] == 3:  # BGR → RGB + alpha 255
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            img = np.dstack((img, np.full(img.shape[:2], 255, dtype=np.uint8)))
-        else:  # BGRA → RGBA
-            img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGBA)
+        if img.shape[2] == 3:
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
+        elif img.shape[2] == 4:
+            # Ensure BGRA order
+            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGRA)
 
         self.inside_og = img
 
@@ -166,91 +165,120 @@ class EditorWidget(QWidget):
 
     def dropEvent(self, event):
         if event.mimeData().hasUrls:
-            print(f"Drop event (inside polygon: {self.mouse_in_polygon})")
             event.setDropAction(Qt.CopyAction)
             event.accept()
             for url in event.mimeData().urls():
                 # links.append(str(url.toLocalFile()))
                 if self.mouse_in_polygon:
                     self.change_inside(str(url.toLocalFile()))
-                else:   
+                else:
                     self.change_template(str(url.toLocalFile()))
             # self.fileDropped.emit(links)
         else:
             event.ignore()
-    
+
     def flip_layer(self):
         self.layer_switch = not self.layer_switch
         self.update()
-    
+
     def warp_inside(self, original_size=False):
-        src_pts = np.array([
-            [0, 0],
-            [self.inside_og.shape[1] - 1, 0],
-            [self.inside_og.shape[1] - 1, self.inside_og.shape[0] - 1],
-            [0, self.inside_og.shape[0] - 1],
-        ], dtype=np.float32)
-
-        dst_pts = np.array([
-            [point.x() * self.width(), point.y() * self.height()] for point in self.points_rel
-        ], dtype=np.float32)
-
-        if original_size:
-            scale_x = self.template.width() / self.width()
-            scale_y = self.template.height() / self.height()
-            dst_pts[:, 0] *= scale_x
-            dst_pts[:, 1] *= scale_y
-
-        transform = cv2.getPerspectiveTransform(
-            src_pts, dst_pts
+        src_pts = np.array(
+            [
+                [0, 0],
+                [self.inside_og.shape[1] - 1, 0],
+                [self.inside_og.shape[1] - 1, self.inside_og.shape[0] - 1],
+                [0, self.inside_og.shape[0] - 1],
+            ],
+            dtype=np.float32,
         )
 
-        warped = cv2.warpPerspective(self.inside_og, transform, (self.width(), self.height()))
-        
-        if warped.shape[2] == 4:
-            warped = cv2.cvtColor(warped, cv2.COLOR_BGRA2RGBA)
+        if original_size:
+            dst_pts = self.polygon_points_in_template_space()
+            w, h = self.template.width(), self.template.height()
         else:
-            warped = cv2.cvtColor(warped, cv2.COLOR_BGR2RGB)
+            dst_pts = np.array(
+                [[p.x(), p.y()] for p in self.points()], dtype=np.float32
+            )
+            w, h = self.width(), self.height()
 
-        h, w = warped.shape[:2]
-        bytes_per_line = warped.strides[0]
-        qimage = QtGui.QImage(warped.data, w, h, bytes_per_line, QtGui.QImage.Format_RGBA8888).rgbSwapped()
-        warped = QPixmap.fromImage(qimage)
+        M = cv2.getPerspectiveTransform(src_pts, dst_pts)
+        warped = cv2.warpPerspective(self.inside_og, M, (w, h))
 
-        return warped
+        warped = cv2.cvtColor(warped, cv2.COLOR_BGRA2RGBA)
+        qimage = QtGui.QImage(
+            warped.data, w, h, warped.strides[0], QtGui.QImage.Format_RGBA8888
+        )
+        return QPixmap.fromImage(qimage)
 
+    def polygon_points_in_template_space(self):
+        # template size
+        tw, th = self.template.width(), self.template.height()
+
+        # how template is drawn on screen
+        scaled = self.template.scaled(self.size(), Qt.KeepAspectRatio)
+        sw, sh = scaled.width(), scaled.height()
+
+        # offsets (letterboxing)
+        ox = (self.width() - sw) / 2
+        oy = (self.height() - sh) / 2
+
+        # scale factors
+        sx = tw / sw
+        sy = th / sh
+
+        # convert each point
+        dst = []
+        for p in self.points():
+            px = (p.x() - ox) * sx
+            py = (p.y() - oy) * sy
+            dst.append([px, py])
+
+        return np.array(dst, dtype=np.float32)
 
     def render_pixmap(self):
-        final_image = QPixmap(self.template.size())
-        final_image.fill(Qt.transparent)
-        painter = QPainter(final_image)
-        painter.setRenderHint(QPainter.Antialiasing)
         template = self.template
 
+        # Final output at template resolution
+        final_image = QPixmap(template.size())
+        final_image.fill(Qt.transparent)
+
+        painter = QPainter(final_image)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        # Warp inside directly to template resolution
         wrapped_inside = self.warp_inside(original_size=True)
 
         if self.layer_switch:
             painter.drawPixmap(0, 0, wrapped_inside)
-            
+
         painter.drawPixmap(0, 0, template)
 
         if not self.layer_switch:
             painter.drawPixmap(0, 0, wrapped_inside)
-        painter.end()
 
+        painter.end()
         return final_image
 
     def export_image(self):
         final_image = self.render_pixmap()
-        save_path = os.path.join(os.getcwd(), "exported_image.png")
-        final_image.save(save_path, "PNG")
-        
-        
+        dialog = QFileDialog(self,
+                             "Save Image",
+                            os.getcwd() + "/exported_image.png",
+                            "PNG Files (*.png);;All Files (*)",
+                            )
+        dialog.setAcceptMode(QFileDialog.AcceptSave)
+        if dialog.exec() == QFileDialog.Accepted:
+            save_path = dialog.selectedFiles()[0]
+            if not save_path.lower().endswith('.png'):
+                save_path += '.png'
+            final_image.save(save_path, "PNG")
+
+
     def export_image_to_clipboard(self):
         final_image = self.render_pixmap()
         clipboard = QApplication.clipboard()
         clipboard.setPixmap(final_image)
-    
+
 
 class ToolbarWidget(QToolBar):
     def __init__(self):
@@ -260,9 +288,7 @@ class ToolbarWidget(QToolBar):
 
         self.export_action = self.addAction("Export")
         self.export_to_clipboard_action = self.addAction("Export to Clipboard")
-        
 
-        
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -276,7 +302,9 @@ class MainWindow(QMainWindow):
         self.addToolBar(self.toolbar)
         self.toolbar.flip_layer_action.triggered.connect(self.editor.flip_layer)
         self.toolbar.export_action.triggered.connect(self.editor.export_image)
-        self.toolbar.export_to_clipboard_action.triggered.connect(self.editor.export_image_to_clipboard)
+        self.toolbar.export_to_clipboard_action.triggered.connect(
+            self.editor.export_image_to_clipboard
+        )
 
 
 if __name__ == "__main__":
